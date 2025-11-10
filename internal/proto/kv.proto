@@ -1,23 +1,44 @@
 syntax = "proto3";
+
 package kv;
 
-message Tag { uint64 counter = 1; string client_id = 2; }
-message ReadReq { string key = 1; }
-message ReadResp { Tag tag = 1; bytes value = 2; }
-message WriteReq { string key = 1; Tag tag = 2; bytes value = 3; }
-message Ack { bool ok = 1; }
-
-service Replica {
-  rpc Read(ReadReq) returns (ReadResp);
-  rpc Write(WriteReq) returns (Ack);
+service ReplicaService {
+  rpc Read(ReadRequest) returns (ReadReply);
+  rpc Write(WriteRequest) returns (WriteReply);
+  rpc Lock(LockRequest) returns (LockReply);   // For blocking protocol
+  rpc Unlock(UnlockRequest) returns (UnlockReply);
 }
 
-message AcquireReq { string key = 1; string client_id = 2; string mode = 3; } // "EXCLUSIVE"
-message AcquireResp { bool granted = 1; string lease_id = 2; int64 lease_ms = 3; }
-message ReleaseReq { string key = 1; string lease_id = 2; }
+message ReadRequest {}
 
-service LockService {
-  rpc Acquire(AcquireReq) returns (AcquireResp);
-  rpc Release(ReleaseReq) returns (Ack);
+message ReadReply {
+  string value = 1;
+  int64 timestamp = 2;
+  string writer_id = 3;
 }
 
+message WriteRequest {
+  string value = 1;
+  int64 timestamp = 2;
+  string writer_id = 3;
+}
+
+message WriteReply {
+  bool success = 1;
+}
+
+message LockRequest {
+  string client_id = 1;
+}
+
+message LockReply {
+  bool granted = 1;
+}
+
+message UnlockRequest {
+  string client_id = 1;
+}
+
+message UnlockReply {
+  bool success = 1;
+}

@@ -9,6 +9,7 @@
 
 #include <grpcpp/grpcpp.h>
 #include "kv.grpc.pb.h"
+#include <grpcpp/create_channel.h>
 
 using namespace std::chrono_literals;
 

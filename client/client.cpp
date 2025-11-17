@@ -151,6 +151,83 @@ bool blocking_put(const std::string& value, int64_t new_ts, const std::string& w
   return acks.load() >= W;
 }
 
+// ---------- ABD (Non-blocking) IMPLEMENTATION ----------
+
+// Read phase helper: query all N, collect max (no write-back here)
+struct ABDMax {
+  bool ok=false; int64_t ts=-1; std::string val; std::string writer;
+};
+
+// Read all N (in parallel). Success if >= R replies.
+ABDMax abd_read_phase_collect_max() {
+  ABDMax out;
+  std::atomic<int> ok_cnt{0};
+  std::mutex m;
+  int64_t best_ts = -1; std::string best_val, best_writer;
+
+  std::vector<std::thread> ths;
+  ths.reserve(N);
+  for (int i = 0; i < N; ++i) {
+    ths.emplace_back([&, i]{
+      std::string v,w; int64_t ts;
+      if (rpc_read(peers[i], v, ts, w)) {
+        ok_cnt.fetch_add(1);
+        std::lock_guard<std::mutex> g(m);
+        if (ts > best_ts) { best_ts = ts; best_val = v; best_writer = w; }
+      }
+    });
+  }
+  for (auto& t : ths) t.join();
+
+  if (ok_cnt.load() >= R) {
+    out.ok = true; out.ts = best_ts; out.val = best_val; out.writer = best_writer;
+  }
+  return out;
+}
+
+// ABD GET = read-phase (collect max) + write-back (to W)
+struct ABDReadResult { bool ok=false; int64_t ts=0; std::string val; std::string writer; };
+
+ABDReadResult abd_get() {
+  ABDReadResult res;
+  ABDMax mx = abd_read_phase_collect_max();
+  if (!mx.ok) return res;
+
+  // Write-back chosen (ts,val) to all N; succeed if >= W acks
+  std::atomic<int> acks{0};
+  std::vector<std::thread> ths;
+  ths.reserve(N);
+  for (int i = 0; i < N; ++i) {
+    ths.emplace_back([&, i]{
+      if (rpc_write(peers[i], mx.val, mx.ts, mx.writer)) acks.fetch_add(1);
+    });
+  }
+  for (auto& t : ths) t.join();
+
+  res.ok = (acks.load() >= W);
+  res.ts = mx.ts; res.val = mx.val; res.writer = mx.writer;
+  return res;
+}
+
+// ABD PUT(value) = read-phase (timestamps only) + write to W with (max_ts+1, value)
+bool abd_put(const std::string& value, const std::string& writer_id) {
+  ABDMax mx = abd_read_phase_collect_max();           // may return ts=-1 on empty store
+  if (!mx.ok) return false;
+  const int64_t new_ts = mx.ts + 1;
+
+  std::atomic<int> acks{0};
+  std::vector<std::thread> ths;
+  ths.reserve(N);
+  for (int i = 0; i < N; ++i) {
+    ths.emplace_back([&, i]{
+      if (rpc_write(peers[i], value, new_ts, writer_id)) acks.fetch_add(1);
+    });
+  }
+  for (auto& t : ths) t.join();
+  return acks.load() >= W;
+}
+
+
 // Simple CLI: client get|put <value> (put auto-increments ts using local counter)
 int main(int argc, char** argv) {
   if (argc < 3) {
@@ -182,6 +259,16 @@ int main(int argc, char** argv) {
     int64_t ts = std::max<int64_t>(r.ts + 1, local_ts.fetch_add(1) + 1);
     bool ok = blocking_put(argv[3], ts, CLIENT_ID);
     std::cout << (ok ? "PUT ok" : "PUT failed") << " ts=" << ts << "\n";
+    return ok ? 0 : 3;
+  } else if (op == "abd_get") {
+    auto r = abd_get();
+    if (!r.ok) { std::cout << "ABD GET failed (no quorum)\n"; return 2; }
+    std::cout << "ABD GET -> value='" << r.val << "' ts=" << r.ts << " writer=" << r.writer << "\n";
+    return 0;
+  } else if (op == "abd_put") {
+    if (argc < 4) { std::cerr << "abd_put needs <value>\n"; return 1; }
+    bool ok = abd_put(argv[3], CLIENT_ID);
+    std::cout << (ok ? "ABD PUT ok" : "ABD PUT failed") << "\n";
     return ok ? 0 : 3;
   } else {
     std::cerr << "unknown op\n";

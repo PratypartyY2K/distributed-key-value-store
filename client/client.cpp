@@ -227,20 +227,11 @@ bool abd_put(const std::string& value, const std::string& writer_id) {
   return acks.load() >= W;
 }
 
-struct LatencyStats {
-  std::vector<long long> get_lat_us;
-  std::vector<long long> put_lat_us;
-
-  void record_get(long long us) { get_lat_us.push_back(us); }
-  void record_put(long long us) { put_lat_us.push_back(us); }
- 
-  static long long percentile(std::vector<long long>& data, double p) {
-    if (data.empty()) return -1;
-    size_t idx = (size_t)(p * data.size());
-    if (idx >= data.size()) idx = data.size() - 1;
-    std::sort(data.begin(), data.end());
-    return data[idx];
-  }
+// --- Load test framework ---
+struct ThreadStats {
+    std::vector<long long> get_lat_us;
+    std::vector<long long> put_lat_us;
+    long long ops = 0;
 };
 
 void run_load (
@@ -250,80 +241,107 @@ void run_load (
   bool use_abd // if false: use blocking get/put; if true: use ABD get/put
 ) {
   std::atomic<bool> stop{false};
-  std::atomic<long long> ops{0};
-  LatencyStats lat;
+  
+   // Per-thread latency + ops counters
+  std::vector<std::unique_ptr<ThreadStats>> all_stats;
+  all_stats.reserve(num_threads);
 
-  auto worker = [&] {
-    std::mt19937 rng(std::random_device{}());
+  // Create per-thread stat objects
+  for (int i = 0; i < num_threads; ++i) {
+    all_stats.push_back(std::make_unique<ThreadStats>());
+  }
+
+  // Launch threads
+  auto worker = [&](int tid) {
+    ThreadStats& stats = *all_stats[tid];
+    std::mt19937_64 rng(tid + std::random_device{}());
     std::uniform_real_distribution<double> dist(0.0, 1.0);
 
-    while(!stop.load()) {
+    while (!stop.load()) {
       double op_choice = dist(rng);
       auto start = std::chrono::high_resolution_clock::now();
       if (op_choice < get_ratio) {
-        // GET
-        auto start = std::chrono::high_resolution_clock::now();
+        // GET operation
         if (use_abd) {
-          auto res = abd_get();
+          abd_get();
         } else {
           blocking_get();
         }
         auto end = std::chrono::high_resolution_clock::now();
-        long long us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-        lat.record_get(us);
+        long long lat_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        stats.get_lat_us.push_back(lat_us);
       } else {
-        // PUT
-        std::string value = "val_" + std::to_string(rng() & 0xFFFF);
-        auto start = std::chrono::high_resolution_clock::now();
+        // PUT operation
+        std::string value = "val_from_thread_" + std::to_string(rng() & 0xFFFF);
         if (use_abd) {
           abd_put(value, CLIENT_ID);
         } else {
-          // For blocking put, need to get max ts first
-          auto result = blocking_get();
-          int64_t ts = result.ok ? result.ts + 1 : 1;
-          blocking_put(value, ts, CLIENT_ID);
+          // For blocking_put, we need a ts; use a simple counter for demo purposes
+          auto res = blocking_get();
+          int64_t base_ts = res.ok ? res.ts + 1 : 1;
+          blocking_put(value, base_ts, CLIENT_ID);
         }
         auto end = std::chrono::high_resolution_clock::now();
-        long long us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-        lat.record_put(us);
+        long long lat_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        stats.put_lat_us.push_back(lat_us);
       }
-      ops.fetch_add(1);
+      stats.ops++;
     }
   };
-  
+
   // Start threads
   std::vector<std::thread> threads;
   for (int i = 0; i < num_threads; ++i) {
-    threads.emplace_back(worker);
+    threads.emplace_back(worker, i);
+}
+
+  // Join threads
+  for (auto& t : threads) {
+    t.join();
   }
 
-  // Run for duration_sec
-  std::this_thread::sleep_for(std::chrono::seconds(duration_sec));
-  stop.store(true);
+  // Merge stats
+  long long total_ops = 0;
+  std::vector<long long> all_get_lats;
+  std::vector<long long> all_put_lats;
 
-  // join threads
-  for (auto& t : threads) t.join();
+  for (int i = 0; i < num_threads;++i) {
+    ThreadStats& stats = *all_stats[i];
+    total_ops += stats.ops;
+    all_get_lats.insert(all_get_lats.end(), stats.get_lat_us.begin(), stats.get_lat_us.end());
+    all_put_lats.insert(all_put_lats.end(), stats.put_lat_us.begin(), stats.put_lat_us.end());
+  }
 
-  // Report stats
-  long long total_ops = ops.load();
-  double ops_sec = total_ops / (double)duration_sec;
+  auto percentile = [&] (std::vector<long long>& data, double p) {
+    if (data.empty()) return 0LL;
+    std::sort(data.begin(), data.end());
+    size_t idx = static_cast<size_t>(p * (data.size() - 1));
+    return data[idx];
+  };
 
-  long long p50_get  = LatencyStats::percentile(lat.get_lat_us, 0.50);
-  long long p95_get  = LatencyStats::percentile(lat.get_lat_us, 0.95);
-  long long p50_put  = LatencyStats::percentile(lat.put_lat_us, 0.50);
-  long long p95_put  = LatencyStats::percentile(lat.put_lat_us, 0.95);
-
-  std::cout << "---- Load Test Results ----\n";
-  std::cout << "Threads: " << num_threads << "\n";
-  std::cout << "Get ratio: " << get_ratio << "\n";
-  std::cout << "Total ops: " << total_ops << " in " << duration_sec << " seconds\n";
-  std::cout << "Throughput: " << ops_sec << " ops/sec\n";
-  std::cout << "GET Latency (us): p50=" << p50_get
-            << " p95=" << p95_get
-            << " p99=" << LatencyStats::percentile(lat.get_lat_us, 0.99) << "\n";
-  std::cout << "PUT Latency (us): p50=" << p50_put
-            << " p95=" << p95_put
-            << " p99=" << LatencyStats::percentile(lat.put_lat_us, 0.99) << "\n";
+  double ops_sec = static_cast<double>(total_ops) / duration_sec;
+  std::cout << "Load Test Results:\n";
+  std::cout << "  Total Ops: " << total_ops << "\n";
+  std::cout << "  Ops/sec: " << ops_sec << "\n";
+  std::cout << " Total threads: " << num_threads << "\n";
+  std::cout << "  Duration (s): " << duration_sec << "\n";
+  std::cout << "  GET Ratio: " << get_ratio << "\n";
+  std::cout << "  Use ABD: " << (use_abd ? "yes" : "no") << "\n";
+  std::cout << "  Client ID: " << CLIENT_ID << "\n";
+  std::cout << "  N=" << N << " R=" << R << " W=" << W << "\n";
+  std::cout << "  Total GETs: " << all_get_lats.size() << "\n";
+  std::cout << "  Total PUTs: " << all_put_lats.size() << "\n";
+  std::cout << "  Latency Percentiles:\n";
+  if (!all_get_lats.empty()) {
+    std::cout << "  GET Latencies (us): p50=" << percentile(all_get_lats, 0.50)
+              << " p90=" << percentile(all_get_lats, 0.90)
+              << " p99=" << percentile(all_get_lats, 0.99) << "\n";
+  }
+  if (!all_put_lats.empty()) {
+    std::cout << "  PUT Latencies (us): p50=" << percentile(all_put_lats, 0.50)
+              << " p90=" << percentile(all_put_lats, 0.90)
+              << " p99=" << percentile(all_put_lats, 0.99) << "\n";
+  }
 }
 
 // Simple CLI: client get|put <value> (put auto-increments ts using local counter)

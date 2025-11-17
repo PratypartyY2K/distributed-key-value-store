@@ -8,6 +8,7 @@
 #include <atomic>
 #include <mutex>
 #include <memory>
+#include <unistd.h>
 
 #include <grpcpp/grpcpp.h>
 #include "kv.grpc.pb.h"
@@ -24,7 +25,9 @@ static std::vector<Peer> peers;
 static int N = 0;
 static int R = 0;
 static int W = 0;
-static std::string CLIENT_ID = "clientA";
+static thread_local std::string CLIENT_ID = "";
+
+
 
 // thread-local stubs: one stub per (thread, replica)
 thread_local std::vector<std::unique_ptr<kv::ReplicaService::Stub>> tls_stubs;
@@ -33,6 +36,27 @@ thread_local std::vector<std::unique_ptr<kv::ReplicaService::Stub>> tls_stubs;
 static std::atomic<int64_t> local_ts{0};
 
 // -------------------- Helpers --------------------
+
+// Generate a unique client ID
+std::string generate_unique_client_id() {
+    // Use: hostname + process id + thread id + random bits
+    std::stringstream ss;
+
+    // Hostname
+    char hostname[256];
+    gethostname(hostname, sizeof(hostname));
+
+    // Random number for extra safety
+    std::mt19937_64 rng(std::random_device{}());
+    uint64_t rand_bits = rng();
+
+    ss << hostname << "_"
+       << "pid" << getpid() << "_"
+       << "tid" << std::this_thread::get_id() << "_"
+       << "r" << rand_bits;
+
+    return ss.str();
+}
 
 // Load replica addresses from a file: each line "host:port"
 std::vector<std::string> load_replicas(const std::string& path) {
@@ -335,6 +359,7 @@ void run_load(
   }
 
   auto worker = [&](int tid) {
+    CLIENT_ID = generate_unique_client_id();
     ensure_stubs(); // init stubs for this thread
 
     ThreadStats& stats = *all_stats[tid];
@@ -413,6 +438,10 @@ void run_load(
   double ops_sec = total_ops / (double)duration_sec;
 
   std::cout << "---- Load Test Results ----\n";
+  std::cout << "Mode: " << (use_abd ? "ABD" : "Blocking") << "\n";
+  std::cout << "Replicas: " << N << " (R=" << R << ", W=" << W << ")\n";
+  std::cout << "Duration: " << duration_sec << " seconds\n";
+  std::cout << "Clients: " << CLIENT_ID << "\n";
   std::cout << "Threads: " << num_threads << "\n";
   std::cout << "Get ratio: " << get_ratio << "\n";
   std::cout << "Total ops: " << total_ops << " in " << duration_sec << " seconds\n";
@@ -445,6 +474,7 @@ int main(int argc, char** argv) {
   }
 
   init_peers(addrs);
+  CLIENT_ID = generate_unique_client_id();
   ensure_stubs(); // main thread's stubs
 
   std::string op = argv[2];

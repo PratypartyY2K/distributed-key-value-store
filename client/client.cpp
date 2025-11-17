@@ -227,6 +227,104 @@ bool abd_put(const std::string& value, const std::string& writer_id) {
   return acks.load() >= W;
 }
 
+struct LatencyStats {
+  std::vector<long long> get_lat_us;
+  std::vector<long long> put_lat_us;
+
+  void record_get(long long us) { get_lat_us.push_back(us); }
+  void record_put(long long us) { put_lat_us.push_back(us); }
+ 
+  static long long percentile(std::vector<long long>& data, double p) {
+    if (data.empty()) return -1;
+    size_t idx = (size_t)(p * data.size());
+    if (idx >= data.size()) idx = data.size() - 1;
+    std::sort(data.begin(), data.end());
+    return data[idx];
+  }
+};
+
+void run_load (
+  int num_threads,
+  double get_ratio,
+  int duration_sec,
+  bool use_abd // if false: use blocking get/put; if true: use ABD get/put
+) {
+  std::atomic<bool> stop{false};
+  std::atomic<long long> ops{0};
+  LatencyStats lat;
+
+  auto worker = [&] {
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+    while(!stop.load()) {
+      double op_choice = dist(rng);
+      auto start = std::chrono::high_resolution_clock::now();
+      if (op_choice < get_ratio) {
+        // GET
+        auto start = std::chrono::high_resolution_clock::now();
+        if (use_abd) {
+          auto res = abd_get();
+        } else {
+          blocking_get();
+        }
+        auto end = std::chrono::high_resolution_clock::now();
+        long long us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        lat.record_get(us);
+      } else {
+        // PUT
+        std::string value = "val_" + std::to_string(rng() & 0xFFFF);
+        auto start = std::chrono::high_resolution_clock::now();
+        if (use_abd) {
+          abd_put(value, CLIENT_ID);
+        } else {
+          // For blocking put, need to get max ts first
+          auto result = blocking_get();
+          int64_t ts = result.ok ? result.ts + 1 : 1;
+          blocking_put(value, ts, CLIENT_ID);
+        }
+        auto end = std::chrono::high_resolution_clock::now();
+        long long us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        lat.record_put(us);
+      }
+      ops.fetch_add(1);
+    }
+  };
+  
+  // Start threads
+  std::vector<std::thread> threads;
+  for (int i = 0; i < num_threads; ++i) {
+    threads.emplace_back(worker);
+  }
+
+  // Run for duration_sec
+  std::this_thread::sleep_for(std::chrono::seconds(duration_sec));
+  stop.store(true);
+
+  // join threads
+  for (auto& t : threads) t.join();
+
+  // Report stats
+  long long total_ops = ops.load();
+  double ops_sec = total_ops / (double)duration_sec;
+
+  long long p50_get  = LatencyStats::percentile(lat.get_lat_us, 0.50);
+  long long p95_get  = LatencyStats::percentile(lat.get_lat_us, 0.95);
+  long long p50_put  = LatencyStats::percentile(lat.put_lat_us, 0.50);
+  long long p95_put  = LatencyStats::percentile(lat.put_lat_us, 0.95);
+
+  std::cout << "---- Load Test Results ----\n";
+  std::cout << "Threads: " << num_threads << "\n";
+  std::cout << "Get ratio: " << get_ratio << "\n";
+  std::cout << "Total ops: " << total_ops << " in " << duration_sec << " seconds\n";
+  std::cout << "Throughput: " << ops_sec << " ops/sec\n";
+  std::cout << "GET Latency (us): p50=" << p50_get
+            << " p95=" << p95_get
+            << " p99=" << LatencyStats::percentile(lat.get_lat_us, 0.99) << "\n";
+  std::cout << "PUT Latency (us): p50=" << p50_put
+            << " p95=" << p95_put
+            << " p99=" << LatencyStats::percentile(lat.put_lat_us, 0.99) << "\n";
+}
 
 // Simple CLI: client get|put <value> (put auto-increments ts using local counter)
 int main(int argc, char** argv) {
@@ -270,6 +368,18 @@ int main(int argc, char** argv) {
     bool ok = abd_put(argv[3], CLIENT_ID);
     std::cout << (ok ? "ABD PUT ok" : "ABD PUT failed") << "\n";
     return ok ? 0 : 3;
+  } else if (op == "load") {
+    if (argc < 7) {
+      std::cerr << "Usage: ./client <replicas.txt> load <threads> <get_ratio> <seconds> <abd|block>\n";
+      return 1;
+    }
+    int num_threads = std::stoi(argv[3]);
+    double get_ratio = std::stod(argv[4]);
+    int duration_sec = std::stoi(argv[5]);
+    std::string mode = argv[6];
+    bool use_abd = (mode == "abd");
+    run_load(num_threads, get_ratio, duration_sec, use_abd);
+    return 0;
   } else {
     std::cerr << "unknown op\n";
     return 1;

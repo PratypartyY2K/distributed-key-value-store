@@ -78,26 +78,35 @@ This produces the following binaries:
 
 # **5. How to Run Replicas**
 
+Each replica process listens on the address provided as its sole command-line argument:  
 On each replica node (EC2 instances), run:
 
 ```bash
-./replica --id <replica_id> --port <port>
+./replica <bind_address>
 ```
 
 Example:
 
 ```bash
-./replica --id 1 --port 50051 &
-./replica --id 2 --port 50052 &
-./replica --id 3 --port 50053 &
+./replica 0.0.0.0:50051 &
+./replica 0.0.0.0:50052 &
+./replica 0.0.0.0:50053 &
 ```
 
-Ensure the IP:port pairs match the entries in:
+On EC2, replicas typically run on different machines.  
+Each machine should run its assigned port listed in:
 
 ```
 replicas_1.txt
 replicas_3.txt
 replicas_5.txt
+```
+
+For example, a valid replicas_3.txt:
+```
+172.31.37.220:50051
+172.31.37.220:50052
+172.31.47.250:50054
 ```
 
 ---

@@ -20,3 +20,5 @@ proto/generated/
 
 # MacOS files
 .DS_Store
+
+*.pem

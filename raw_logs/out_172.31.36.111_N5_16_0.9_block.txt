@@ -1,0 +1,11 @@
+---- Load Test Results ----
+Mode: Blocking
+Replicas: 5 (R=3, W=3)
+Duration: 20 seconds
+Clients: ip-172-31-36-111.us-east-2.compute.internal_pid1236972_tid140114406877376_r11316862766795226856
+Threads: 16
+Get ratio: 0.9
+Total ops: 8839 in 20 seconds
+Throughput: 441.95 ops/sec
+GET Latency (us): p50=31779 p95=49606 p99=60900
+PUT Latency (us): p50=65396 p95=88156 p99=102548

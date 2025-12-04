@@ -46,8 +46,6 @@ run_remote_load() {
     RATIO=$3
     MODE=$4
 
-    # Note: We pass the filename $REPLICAS_FILE to the remote client.
-    # The remote client must have this file inside $BASE_DIR.
     REMOTE_CMD="cd $BASE_DIR && ./client $REPLICAS_FILE load $THREADS $RATIO $DURATION $MODE"
     
     echo "[INFO] Running load on $CLIENT_IP (N=$N, T=$THREADS, ratio=$RATIO, mode=$MODE)"

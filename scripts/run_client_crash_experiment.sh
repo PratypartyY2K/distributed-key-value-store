@@ -9,7 +9,7 @@ THREADS=${4:-"1"}       # Default threads
 DURATION=30             # Total experiment duration in seconds
 CRASH_DELAY=10          # How long to wait before crashing a node
 
-# Calculated buffer to ensure processes finish before we copy
+# Calculated buffer to ensure processes finish before copying logs
 BUFFER_TIME=5           
 
 REPLICAS_FILE="replicas_${N}.txt"
@@ -64,7 +64,7 @@ echo "[2] Experiment running. Waiting ${CRASH_DELAY}s before crash..."
 sleep $CRASH_DELAY
 
 echo "[3] !!! INJECTING CRASH ON $CRASH_IP !!!"
-# FIX: Use -x to match exact binary name 'client' so we don't kill this script
+# Use -x to match exact binary name 'client' so we don't kill this script
 ssh ec2-user@$CRASH_IP "pkill -x client || true"
 echo "    → Client on $CRASH_IP killed."
 

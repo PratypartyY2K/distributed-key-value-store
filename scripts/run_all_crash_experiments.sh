@@ -6,7 +6,6 @@ RATIOS=("0.9" "0.1")
 NS=("1" "3" "5")
 THREADS=16
 
-# Ensure the experiment script is executable
 chmod +x run_client_crash_experiment.sh
 
 echo "Starting full test suite with ${THREADS} threads..."

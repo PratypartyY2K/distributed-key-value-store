@@ -1,0 +1,11 @@
+---- Load Test Results ----
+Mode: ABD
+Replicas: 5 (R=3, W=3)
+Duration: 30 seconds
+Clients: ip-172-31-34-114.us-east-2.compute.internal_pid3384990_tid139862104807616_r12058823747977173650
+Threads: 16
+Get ratio: 0.1
+Total ops: 15887 in 30 seconds
+Throughput: 529.567 ops/sec
+GET Latency (us): p50=29128 p95=45242 p99=55511
+PUT Latency (us): p50=29272 p95=46660 p99=58926

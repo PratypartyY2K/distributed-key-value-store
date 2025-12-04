@@ -2,43 +2,59 @@ syntax = "proto3";
 
 package kv;
 
+// ReplicaService exposes the minimal RPC surface for both ABD and blocking
+// register protocols. Clients use Read/Write in both modes and optionally
+// acquire per-replica locks when running the blocking variant.
 service ReplicaService {
+  // Returns the replica's latest value metadata for quorum reads.
   rpc Read(ReadRequest) returns (ReadReply);
+  // Attempts to install a newer value+timestamp pair on the replica.
   rpc Write(WriteRequest) returns (WriteReply);
-  rpc Lock(LockRequest) returns (LockReply);   // For blocking protocol
+  // Serializes writers during the blocking protocol by granting a lock.
+  rpc Lock(LockRequest) returns (LockReply);
+  // Releases locks previously granted to the caller.
   rpc Unlock(UnlockRequest) returns (UnlockReply);
 }
 
+// Empty request because replicas always serve a single-key register.
 message ReadRequest {}
 
+// Carries the full register contents so clients can resolve the latest write.
 message ReadReply {
   string value = 1;
   int64 timestamp = 2;
   string writer_id = 3;
 }
 
+// Clients write a new value accompanied by a monotonically increasing
+// timestamp and an identifier for debugging/lineage.
 message WriteRequest {
   string value = 1;
   int64 timestamp = 2;
   string writer_id = 3;
 }
 
+// Replicas always succeed (best-effort) by design; clients care about the ack.
 message WriteReply {
   bool success = 1;
 }
 
+// Each client obtains locks with its globally unique identifier.
 message LockRequest {
   string client_id = 1;
 }
 
+// granted=true indicates the caller now owns the replica lock.
 message LockReply {
   bool granted = 1;
 }
 
+// Unlock echoes the client id to ensure only the owner releases it.
 message UnlockRequest {
   string client_id = 1;
 }
 
+// success=true when the lock transitioned back to free.
 message UnlockReply {
   bool success = 1;
 }

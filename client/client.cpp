@@ -17,6 +17,7 @@ using namespace std::chrono_literals;
 
 // -------------------- Global state --------------------
 
+// Each Peer holds the network address of a replica participating in the quorum.
 struct Peer {
   std::string addr;
 };
@@ -37,7 +38,12 @@ static std::atomic<int64_t> local_ts{0};
 
 // -------------------- Helpers --------------------
 
-// Generate a unique client ID
+/*
+ * generate_unique_client_id
+ * Returns a best-effort globally unique identifier constructed from
+ * hostname, process id, thread id, and random bits. The ID is attached to
+ * lock requests so replicas can verify ownership when unlocking.
+ */
 std::string generate_unique_client_id() {
     // Use: hostname + process id + thread id + random bits
     std::stringstream ss;
@@ -58,7 +64,12 @@ std::string generate_unique_client_id() {
     return ss.str();
 }
 
-// Load replica addresses from a file: each line "host:port"
+/*
+ * load_replicas
+ * Input: path to a plaintext file that lists replicas line-by-line in
+ * "host:port" form. Output: vector of addresses used during bootstrap.
+ * Minimal validation is performed since the script controls the contents.
+ */
 std::vector<std::string> load_replicas(const std::string& path) {
   std::vector<std::string> addrs;
   std::ifstream in(path);
@@ -69,7 +80,11 @@ std::vector<std::string> load_replicas(const std::string& path) {
   return addrs;
 }
 
-// Initialize global peer list
+/*
+ * init_peers
+ * Stores the provided replica addresses, derives N/R/W quorum sizes, and
+ * clears any previous state. R and W default to majority quorums.
+ */
 void init_peers(const std::vector<std::string>& addrs) {
   peers.clear();
   for (auto& a : addrs) {
@@ -80,7 +95,12 @@ void init_peers(const std::vector<std::string>& addrs) {
   W = (N / 2) + 1;
 }
 
-// Initialize thread-local stubs for this thread
+/*
+ * init_thread_local_stubs
+ * Each worker thread keeps its own vector of gRPC stubs to avoid sharing
+ * channels. This helper recreates per-thread stubs whenever the peer list
+ * changes.
+ */
 void init_thread_local_stubs() {
   tls_stubs.clear();
   tls_stubs.reserve(N);
@@ -90,7 +110,11 @@ void init_thread_local_stubs() {
   }
 }
 
-// Ensure stubs are ready in this thread
+/*
+ * ensure_stubs
+ * Lazily initializes thread-local stubs on demand. Call before issuing any
+ * RPC to guarantee tls_stubs matches the current replica count.
+ */
 void ensure_stubs() {
   if ((int)tls_stubs.size() != N) {
     init_thread_local_stubs();
@@ -99,6 +123,12 @@ void ensure_stubs() {
 
 // -------------------- RPC wrappers --------------------
 
+/*
+ * rpc_lock / rpc_unlock / rpc_read / rpc_write
+ * Each helper issues a single RPC with a short deadline and, when
+ * applicable, copies reply fields into output parameters. Callers operate
+ * on replica indices to avoid additional address bookkeeping.
+ */
 bool rpc_lock(int idx) {
   ensure_stubs();
   grpc::ClientContext ctx;
@@ -150,6 +180,7 @@ bool rpc_write(int idx, const std::string& value, int64_t ts, const std::string&
 
 // -------------------- Blocking protocol --------------------
 
+// blocking_get returns this summary of the quorum read attempt.
 struct ReadResult {
   bool ok = false;
   int64_t ts = 0;
@@ -157,6 +188,12 @@ struct ReadResult {
   std::string writer;
 };
 
+/*
+ * blocking_get
+ * Implements the two-phase majority read for the blocking protocol.
+ * 1) Acquire R locks, 2) read and select the highest timestamp, 3) unlock.
+ * Returns {ok=false} if the quorum could not be reached.
+ */
 ReadResult blocking_get() {
   // 1) Acquire locks from replicas until R granted
   std::vector<int> locked_idxs;
@@ -219,7 +256,12 @@ ReadResult blocking_get() {
   return r;
 }
 
-// Writes: write to all, success if at least W acks
+/*
+ * blocking_put
+ * Replicates the supplied (value, timestamp, writer_id) to every replica
+ * after a successful blocking_get. The call counts acknowledgments and
+ * returns true only when a write quorum W responds.
+ */
 bool blocking_put(const std::string& value, int64_t new_ts, const std::string& writer_id) {
   std::atomic<int> acks{0};
   std::vector<std::thread> ths;
@@ -238,6 +280,7 @@ bool blocking_put(const std::string& value, int64_t new_ts, const std::string& w
 
 // -------------------- ABD (non-blocking) protocol --------------------
 
+// Holds the max timestamp/value observed during the ABD read phase.
 struct ABDMax {
   bool ok = false;
   int64_t ts = -1;
@@ -245,6 +288,7 @@ struct ABDMax {
   std::string writer;
 };
 
+// Returned to callers when ABD read completes successfully.
 struct ABDReadResult {
   bool ok = false;
   int64_t ts = 0;
@@ -252,7 +296,12 @@ struct ABDReadResult {
   std::string writer;
 };
 
-// Read phase: query all N, collect max (ts,val)
+/*
+ * abd_read_phase_collect_max
+ * Performs the first ABD phase: read from every replica, track the highest
+ * timestamp, and require that at least R reads succeed. The result seeds GET
+ * read/write-back as well as PUT timestamp selection.
+ */
 ABDMax abd_read_phase_collect_max() {
   ABDMax out;
   std::atomic<int> ok_cnt{0};
@@ -289,7 +338,12 @@ ABDMax abd_read_phase_collect_max() {
   return out;
 }
 
-// ABD GET = read-phase + write-back
+/*
+ * abd_get
+ * Executes the full ABD GET by invoking the read phase and then writing the
+ * winning value back to every replica. Returns ok=false when either phase
+ * fails to reach a quorum.
+ */
 ABDReadResult abd_get() {
   ABDReadResult res;
   ABDMax mx = abd_read_phase_collect_max();
@@ -315,7 +369,11 @@ ABDReadResult abd_get() {
   return res;
 }
 
-// ABD PUT(value) = read timestamps + write majority with ts+1
+/*
+ * abd_put
+ * Writes a caller-provided value by first learning the highest timestamp,
+ * then writing value with ts+1 until a write quorum acknowledges.
+ */
 bool abd_put(const std::string& value, const std::string& writer_id) {
   ABDMax mx = abd_read_phase_collect_max();
   if (!mx.ok) return false;
@@ -338,12 +396,19 @@ bool abd_put(const std::string& value, const std::string& writer_id) {
 
 // -------------------- Load generator --------------------
 
+// Per-thread metrics container used by the load generator.
 struct ThreadStats {
   std::vector<long long> get_lat_us;
   std::vector<long long> put_lat_us;
   long long ops = 0;
 };
 
+/*
+ * run_load
+ * Spawns num_threads workers that repeatedly issue GET or PUT requests for
+ * duration_sec seconds. Aggregates latency samples, prints throughput stats,
+ * and can target either ABD or blocking mode based on use_abd.
+ */
 void run_load(
     int num_threads,
     double get_ratio,
@@ -456,6 +521,11 @@ void run_load(
 
 // -------------------- main() --------------------
 
+/*
+ * main
+ * Parses CLI flags, initializes the client runtime, and dispatches the
+ * requested command (single get/put, ABD variants, or the load generator).
+ */
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::cerr << "Usage:\n"

@@ -1,0 +1,262 @@
+1. Basic Replica Functionality
+Test 1.1 – Single Replica GET/PUT (BLOCK mode)
+
+Command:
+
+./client replicas_1.txt put "hello"
+./client replicas_1.txt get
+
+
+Expected behavior:
+
+GET returns hello.
+
+Test 1.2 – Single Replica GET/PUT (ABD mode)
+
+Command:
+
+./client replicas_1.txt abd_put "alpha"
+./client replicas_1.txt abd_get
+
+
+Expected behavior:
+
+Behavior identical to BLOCK since N=1.
+
+2. Multi-Replica Correctness Tests (ABD Only)
+Test 2.1 – ABD write propagates timestamp
+
+Command:
+
+./client replicas_3.txt abd_put "v1"
+./client replicas_3.txt abd_get
+
+
+Validation:
+
+GET must return "v1" from the highest timestamp among replicas.
+
+All replicas must reflect the same timestamp after read-repair.
+
+Test 2.2 – Sequential writes produce increasing timestamps
+
+Command:
+
+./client replicas_3.txt abd_put "v1"
+./client replicas_3.txt abd_put "v2"
+./client replicas_3.txt abd_put "v3"
+
+
+Expected:
+
+Timestamps increase monotonically
+
+Final abd_get must return "v3"
+
+Test 2.3 – Read-repair validates linearizability
+
+Replica 3 is manually paused (TA can kill the replica process).
+
+Commands:
+
+./client replicas_3.txt abd_put "correct_value"
+./client replicas_3.txt abd_get
+
+
+Expected:
+
+ABD still returns "correct_value"
+
+Reads from outdated replicas trigger write-back
+
+Test 2.4 – ABD read should not return stale values
+
+Kill one replica:
+
+pkill replica   # on one replica node
+./client replicas_3.txt abd_get
+
+
+Expected:
+
+Correct value returned as long as quorum (2/3) alive
+
+3. Multi-Replica Correctness Tests (BLOCK Protocol)
+Test 3.1 – BLOCK PUT blocks until all replicas ACK
+
+Slow one replica using:
+
+tc qdisc add dev eth0 root netem delay 200ms
+
+
+Command:
+
+./client replicas_3.txt put "xyz"
+
+
+Expected:
+
+PUT latency increases by ≈200ms
+
+Confirms blocking behavior
+
+Test 3.2 – BLOCK GET may return stale value
+./client replicas_3.txt put "new_value"
+# kill replica 1 before it is updated
+./client replicas_3.txt get
+
+
+Expected:
+
+GET may return old or new value
+
+Demonstrates weaker consistency
+
+4. Concurrency Tests
+Test 4.1 – Concurrent writes (BLOCK mode)
+
+Start two terminals:
+
+Terminal A:
+
+./client replicas_3.txt put "A"
+
+
+Terminal B:
+
+./client replicas_3.txt put "B"
+
+
+Expected:
+
+Different replicas may show different final values
+
+Valid for BLOCK, not ABD
+
+Test 4.2 – Concurrent writes (ABD mode)
+
+Terminal A:
+
+./client replicas_3.txt abd_put "A"
+
+
+Terminal B:
+
+./client replicas_3.txt abd_put "B"
+
+
+Expected:
+
+ABD resolves using timestamps
+
+All GETs eventually return the value associated with the highest timestamp
+
+5. Load Testing
+Test 5.1 – Load test sanity
+./client replicas_3.txt load 4 0.9 5 abd
+
+
+Expected:
+
+Total ops > 1000
+
+GET latency lower than PUT latency
+
+Throughput non-zero
+
+Test 5.2 – N scaling test
+
+Run for N = 1, 3, 5:
+
+./client replicas_1.txt load 8 0.9 5 block
+./client replicas_3.txt load 8 0.9 5 block
+./client replicas_5.txt load 8 0.9 5 block
+
+
+Expected:
+
+Throughput decreases as N increases
+
+PUT latency increases since BLOCK writes to all replicas
+
+6. Crash Tolerance Tests
+Test 6.1 – Client crash experiment (ABD)
+./run_client_crash_experiment.sh abd 0.9 3 16
+
+
+Expected:
+
+Client 1 dies at t=10s
+
+Surviving clients continue
+
+Logs collected into crash_exp_abd_N3_ratio0.9_*
+
+Test 6.2 – Client crash experiment (BLOCK)
+./run_client_crash_experiment.sh block 0.1 5 16
+
+
+Expected:
+
+BLOCK throughput stabilizes quickly
+
+ABD shows higher post-crash latency spikes
+
+7. Fault Recovery Tests
+Test 7.1 – Replica restart (ABD)
+
+Kill and restart a replica:
+
+pkill replica
+./replica 0.0.0.0:50051
+./client replicas_3.txt abd_get
+
+
+Expected:
+
+ABD read-repair corrects stale replica
+
+8. Invalid Input / Edge Cases
+Test 8.1 – Empty PUT
+./client replicas_3.txt put ""
+
+
+Expected:
+
+Server accepts but stores an empty string
+
+GET returns an empty string
+
+Test 8.2 – Invalid mode
+./client replicas_3.txt load 4 0.9 5 invalid_mode
+
+
+Expected:
+
+Error message/usage message printed
+
+The program does not crash
+
+Test 8.3 – Missing file
+./client missing.txt get
+
+
+Expected:
+
+Prints "No replicas."
+
+Exits cleanly
+
+9. Cleanup Verification
+Test 9.1 – All logs generated correctly
+
+After running crash tests:
+
+ls crash_logs/
+
+
+Expected:
+
+Folders for each mode/N/ratio
+
+Each folder contains 3 log files (one empty for a crashed client)

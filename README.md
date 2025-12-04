@@ -357,3 +357,47 @@ All experiments (load tests, scaling with N, and crash experiments) were conduct
   * Average inter-instance RTT ~0.3–0.6 ms
 
 This environment ensures consistent performance for benchmarking both the ABD and BLOCK protocols. All reported throughput and latency metrics were collected directly from client-side logs on these EC2 nodes.
+
+---
+
+# **15. Experiment Automation Scripts**
+
+These helper scripts encapsulate the workflows used to gather the performance data referenced above. They are optional but save time when running suites repeatedly.
+
+### **distributed_load_runner.sh**
+
+* Location: `scripts/distributed_load_runner.sh`
+* Purpose: Fan out load tests from a controller node to multiple remote clients over SSH while sweeping thread counts, GET ratios, and consistency modes.
+* Requirements: password-less SSH access to each `CLIENTS` entry and the compiled `client` binary available under `BASE_DIR` on every remote host.
+* Usage:
+  ```bash
+  ./scripts/distributed_load_runner.sh
+  ```
+  Logs are captured to `results_<timestamp>/out_<client>_N<N>_<threads>_<ratio>_<mode>.txt` which later feed the parser.
+
+### **distributed_parser.py**
+
+* Location: `scripts/distributed_parser.py`
+* Purpose: Convert the raw per-client log files under `raw_logs/` (or the output directory produced above) into a single CSV with throughput and latency percentiles.
+* Usage:
+  ```bash
+  cd scripts
+  python3 distributed_parser.py
+  ```
+  The script automatically creates `../results/distributed_results.csv` if the folder is missing and warns if no logs are present.
+
+### **run_all_crash_experiments.sh**
+
+* Location: `scripts/run_all_crash_experiments.sh`
+* Purpose: Iterate through every {mode × ratio × replica count} combination, delegating to `run_client_crash_experiment.sh` for each run, and throttle the loop with a 5 second cool-down to avoid spurious overload.
+* Usage:
+  ```bash
+  ./scripts/run_all_crash_experiments.sh
+  ```
+  Ensure `run_client_crash_experiment.sh` is executable and that replica inventory files are populated prior to starting the sweep.
+
+---
+
+# **16. Manual Test Catalog**
+
+The file `tests/test_cases.txt` documents the manual/TA test plan used throughout development. Each entry specifies the goal, setup, commands, and verification cues for areas ranging from single-replica sanity tests to failure-injection scenarios. Consult this file when validating a new deployment or when reproducing a bug; the layout is intentionally script-friendly so sections can be converted into automated smoke tests later.

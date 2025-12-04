@@ -1,8 +1,22 @@
 #!/bin/bash
 
-#############################
-#   Distributed Load Runner #
-#############################
+###############################################################################
+# Distributed Load Runner
+# -----------------------------------------------------------------------------
+# This orchestration script fans out client load tests across a fleet of EC2
+# hosts. Each remote invocation runs the `client` binary in load-test mode and
+# streams its stdout back to the controller node so we retain a copy of every
+# experiment. Adjust the configuration section below to target your own hosts,
+# replica list, and workload matrix.
+#
+# Usage:
+#   ./scripts/distributed_load_runner.sh
+#
+# Requirements:
+#   * Password-less SSH access from the controller to each CLIENTS entry.
+#   * The `client` binary and replica files present on every remote host.
+#   * Local write access to capture log files under OUTPUT_DIR.
+###############################################################################
 
 # ---- CONFIGURATION ----
 
@@ -12,13 +26,13 @@ CLIENTS=(
   "172.31.47.43"    # Client3
 )
 
-REPLICAS_FILE="replicas_3.txt"
-BASE_DIR="~/distributed-key-value-store/build"
-DURATION=20
+REPLICAS_FILE="replicas_3.txt"              # Passed to the client binary
+BASE_DIR="~/distributed-key-value-store/build"  # Remote directory containing binaries
+DURATION=20                                  # Seconds each load run should execute
 
-THREADS_LIST=(1 2 4 8 16)
-RATIO_LIST=(0.9 0.1)
-MODES=("abd" "block")
+THREADS_LIST=(1 2 4 8 16)                    # Thread counts to sweep
+RATIO_LIST=(0.9 0.1)                         # GET ratios to sweep
+MODES=("abd" "block")                        # Protocols to evaluate
 
 OUTPUT_DIR="results_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUTPUT_DIR"
@@ -40,6 +54,7 @@ echo ""
 
 
 # ---- RUN COMMAND ON REMOTE CLIENT ----
+# Wraps the SSH call and records stdout per client/mode into OUTPUT_DIR.
 run_remote_load() {
     CLIENT_IP=$1
     THREADS=$2
@@ -55,6 +70,7 @@ run_remote_load() {
 }
 
 # ---- MASTER LOOP ----
+# Sweep all requested combinations and fan out across the CLIENTS array.
 for MODE in "${MODES[@]}"; do
     for R in "${RATIO_LIST[@]}"; do
         for T in "${THREADS_LIST[@]}"; do

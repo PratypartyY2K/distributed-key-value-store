@@ -1,3 +1,16 @@
+/*
+ * client.cpp
+ * ---------------------------------------------------------------------------
+ * Implements the user-facing CLI plus the ABD/blocking protocol client logic
+ * and load generator used in experiments. The code is organized into sections:
+ *   1) bootstrap helpers (replica discovery, stub management)
+ *   2) RPC wrappers (Lock/Unlock/Read/Write)
+ *   3) blocking protocol implementation
+ *   4) ABD protocol implementation
+ *   5) multi-threaded load generator
+ *   6) CLI entry point
+ */
+
 #include <chrono>
 #include <fstream>
 #include <iostream>

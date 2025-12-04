@@ -1,3 +1,15 @@
+/*
+ * server.cpp
+ * ---------------------------------------------------------------------------
+ * Minimal replica process hosting the gRPC ReplicaService. Each binary owns a
+ * single ReplicaState instance (declared in replica_state.hpp) that tracks the
+ * register value, timestamp, and lock metadata. The service exposes four RPCs
+ * that jointly support both ABD and blocking protocols:
+ *   * Read/Write for timestamped register semantics
+ *   * Lock/Unlock for the blocking protocol's mutual exclusion
+ * The main() entry simply boots a server on the requested address and blocks.
+ */
+
 #include <iostream>
 #include <grpcpp/grpcpp.h>
 #include "kv.grpc.pb.h"

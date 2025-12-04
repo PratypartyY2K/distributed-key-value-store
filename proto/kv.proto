@@ -1,3 +1,9 @@
+// kv.proto
+// ---------------------------------------------------------------------------
+// Defines the gRPC surface shared by both the ABD and blocking clients/replicas.
+// The service intentionally stays small so it maps cleanly to textbook register
+// operations while still exposing enough state for debugging (writer IDs,
+// timestamps, lock ownership, etc.).
 syntax = "proto3";
 
 package kv;
